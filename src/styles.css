@@ -1,22 +1,25 @@
 :root {
-  --mint: #eafbee;
-  --signal: #ddc9a3;
-  --signal-24: rgba(221, 201, 163, 0.24);
-  --signal-12: rgba(221, 201, 163, 0.12);
-  --signal-00: rgba(221, 201, 163, 0);
-  --forest: #0b2915;
-  --forest-92: rgba(11, 41, 21, 0.92);
-  --forest-76: rgba(11, 41, 21, 0.76);
-  --forest-68: rgba(11, 41, 21, 0.68);
-  --forest-52: rgba(11, 41, 21, 0.52);
-  --forest-22: rgba(11, 41, 21, 0.22);
-  --forest-12: rgba(11, 41, 21, 0.12);
-  --mint-72: rgba(234, 251, 238, 0.72);
-  --mint-62: rgba(234, 251, 238, 0.62);
-  --mint-46: rgba(234, 251, 238, 0.46);
-  --mint-22: rgba(234, 251, 238, 0.22);
-  --mint-12: rgba(234, 251, 238, 0.12);
-  --mint-07: rgba(234, 251, 238, 0.07);
+  /* Palette: graphite ground, bone type, champagne-gold accent.
+     Token names are historical; --forest is the dark ground, --mint the
+     light surface, --signal the accent. */
+  --mint: #f2eee7;
+  --signal: #c4a46a;
+  --signal-24: rgba(196, 164, 106, 0.24);
+  --signal-12: rgba(196, 164, 106, 0.12);
+  --signal-00: rgba(196, 164, 106, 0);
+  --forest: #1a1a1a;
+  --forest-92: rgba(26, 26, 26, 0.92);
+  --forest-76: rgba(26, 26, 26, 0.76);
+  --forest-68: rgba(26, 26, 26, 0.68);
+  --forest-52: rgba(26, 26, 26, 0.52);
+  --forest-22: rgba(26, 26, 26, 0.22);
+  --forest-12: rgba(26, 26, 26, 0.12);
+  --mint-72: rgba(242, 238, 231, 0.72);
+  --mint-62: rgba(242, 238, 231, 0.62);
+  --mint-46: rgba(242, 238, 231, 0.46);
+  --mint-22: rgba(242, 238, 231, 0.22);
+  --mint-12: rgba(242, 238, 231, 0.12);
+  --mint-07: rgba(242, 238, 231, 0.07);
   --display: "Barlow Condensed", "Arial Narrow", "Helvetica Neue", sans-serif;
   --body: "Manrope", "Helvetica Neue", Arial, sans-serif;
   --page-pad: clamp(1.25rem, 4vw, 4.5rem);
@@ -1646,7 +1649,7 @@ h2 em {
 
 .quote-form select {
   appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23DDC9A3' d='m3 6 5 5 5-5'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23C4A46A' d='m3 6 5 5 5-5'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right center;
   background-size: 1rem;
