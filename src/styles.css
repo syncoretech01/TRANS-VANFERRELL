@@ -1,9 +1,9 @@
 :root {
   --mint: #eafbee;
-  --signal: #f5a524;
-  --signal-24: rgba(245, 165, 36, 0.24);
-  --signal-12: rgba(245, 165, 36, 0.12);
-  --signal-00: rgba(245, 165, 36, 0);
+  --signal: #ddc9a3;
+  --signal-24: rgba(221, 201, 163, 0.24);
+  --signal-12: rgba(221, 201, 163, 0.12);
+  --signal-00: rgba(221, 201, 163, 0);
   --forest: #0b2915;
   --forest-92: rgba(11, 41, 21, 0.92);
   --forest-76: rgba(11, 41, 21, 0.76);
@@ -1646,7 +1646,7 @@ h2 em {
 
 .quote-form select {
   appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23F5A524' d='m3 6 5 5 5-5'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23DDC9A3' d='m3 6 5 5 5-5'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right center;
   background-size: 1rem;
