@@ -1,6 +1,9 @@
 :root {
   --mint: #eafbee;
-  --signal: #00c853;
+  --signal: #f5a524;
+  --signal-24: rgba(245, 165, 36, 0.24);
+  --signal-12: rgba(245, 165, 36, 0.12);
+  --signal-00: rgba(245, 165, 36, 0);
   --forest: #0b2915;
   --forest-92: rgba(11, 41, 21, 0.92);
   --forest-76: rgba(11, 41, 21, 0.76);
@@ -543,12 +546,12 @@ a:hover .arrow-icon--diagonal {
   height: 0.42rem;
   background: var(--signal);
   border-radius: 50%;
-  box-shadow: 0 0 0 0.3rem rgba(0, 200, 83, 0.12);
+  box-shadow: 0 0 0 0.3rem var(--signal-12);
   animation: signal-pulse 1.8s ease-in-out infinite;
 }
 
 @keyframes signal-pulse {
-  50% { box-shadow: 0 0 0 0.65rem rgba(0, 200, 83, 0); }
+  50% { box-shadow: 0 0 0 0.65rem var(--signal-00); }
 }
 
 .route-stage {
@@ -641,7 +644,7 @@ a:hover .arrow-icon--diagonal {
   padding: 0.75rem;
   color: var(--forest);
   background: var(--mint);
-  box-shadow: 0.45rem 0.45rem 0 rgba(0, 200, 83, 0.24);
+  box-shadow: 0.45rem 0.45rem 0 var(--signal-24);
   gap: 0.22rem;
 }
 
@@ -1643,7 +1646,7 @@ h2 em {
 
 .quote-form select {
   appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%2300C853' d='m3 6 5 5 5-5'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23F5A524' d='m3 6 5 5 5-5'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right center;
   background-size: 1rem;

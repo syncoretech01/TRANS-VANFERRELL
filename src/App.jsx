@@ -110,7 +110,7 @@ function Arrow({ diagonal = false }) {
 
 function Logo({ compact = false, onClick }) {
   return (
-    <a className={`brand${compact ? " brand--compact" : ""}`} href="#top" aria-label="TRANS VANFERRELL home" onClick={onClick}>
+    <a className={`brand${compact ? " brand--compact" : ""}`} href="#top" aria-label="London Trucking home" onClick={onClick}>
       <svg className="brand-mark" viewBox="0 0 64 52" role="img" aria-hidden="true">
         <path className="brand-mark__bar" d="M7 10h50" />
         <path className="brand-mark__lane" d="M15 11 32 43 49 11" />
@@ -118,7 +118,7 @@ function Logo({ compact = false, onClick }) {
       </svg>
       <span className="brand-type">
         <span className="brand-name">
-          <span>TRANS</span> VANFERRELL
+          <span>London</span> Trucking
         </span>
         {!compact && <span className="brand-descriptor">General Freight Brokerage</span>}
       </span>
@@ -134,7 +134,7 @@ function HeroRoute() {
       aria-label="Freight route diagram showing a load moving from origin through capacity matching to delivery."
     >
       <div className="route-shell__topline">
-        <span>ROUTE DESK / TVF-01</span>
+        <span>ROUTE DESK / LDN-01</span>
         <span className="live-label"><i /> COORDINATING</span>
       </div>
 
@@ -642,7 +642,7 @@ function App() {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const brief = [
-      "TRANS VANFERRELL — FREIGHT QUOTE BRIEF",
+      "LONDON TRUCKING — FREIGHT QUOTE BRIEF",
       "",
       `Contact: ${data.get("name")}`,
       `Company: ${data.get("company") || "Not provided"}`,
@@ -677,7 +677,7 @@ function App() {
     const url = URL.createObjectURL(file);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "trans-vanferrell-load-brief.txt";
+    link.download = "london-trucking-load-brief.txt";
     link.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
     setQuoteStatus("Load brief downloaded.");
@@ -730,7 +730,7 @@ function App() {
             <div className="hero-content">
               <p className="section-kicker hero-kicker">
                 <span>General Freight Brokerage</span>
-                <span>Broker ID / TVF</span>
+                <span>Broker ID / LDN</span>
               </p>
 
               <h1 className="hero-title" aria-label="Freight, without the friction.">
@@ -740,7 +740,7 @@ function App() {
               </h1>
 
               <p className="hero-copy">
-                TRANS VANFERRELL connects shippers with carrier capacity and keeps every moving part coordinated—from first quote through final delivery.
+                London Trucking connects shippers with carrier capacity and keeps every moving part coordinated—from first quote through final delivery.
               </p>
 
               <div className="hero-actions">
@@ -857,7 +857,7 @@ function App() {
 
               <div className="service-board" aria-live="polite" ref={serviceBoardRef}>
                 <div className="service-board__top">
-                  <span>TVF / MODE SELECT</span>
+                  <span>LDN / MODE SELECT</span>
                   <span>{services[activeService].code} OF 04</span>
                 </div>
                 <p className="service-board__description">{services[activeService].description}</p>
@@ -901,13 +901,13 @@ function App() {
 
         <section className="why" id="why">
           <div className="section-wrap">
-            <h2 className="sr-only">Why TRANS VANFERRELL</h2>
+            <h2 className="sr-only">Why London Trucking</h2>
             <div className="why-head">
               <div className="section-index" data-reveal>
                 <span>04</span>
                 <p>Built for clarity</p>
               </div>
-              <p data-reveal>THE TRANS VANFERRELL APPROACH</p>
+              <p data-reveal>THE LONDON TRUCKING APPROACH</p>
             </div>
 
             <div className="why-statement">
@@ -937,7 +937,7 @@ function App() {
               <div className="why-seal" aria-hidden="true">
                 <svg viewBox="0 0 120 120">
                   <path id="seal-path" d="M60,60 m-43,0 a43,43 0 1,1 86,0 a43,43 0 1,1 -86,0" fill="none" />
-                  <text><textPath href="#seal-path">TRANS VANFERRELL • FREIGHT BROKERAGE • </textPath></text>
+                  <text><textPath href="#seal-path">LONDON TRUCKING • FREIGHT BROKERAGE • </textPath></text>
                   <path d="M33 42h54M40 43l20 39 20-39" />
                 </svg>
               </div>
@@ -958,7 +958,7 @@ function App() {
               </div>
               <h2 data-reveal>Let’s get your<br />next load <em>moving.</em></h2>
               <p data-reveal>
-                Give us the shipment essentials and create a clean load brief for your TRANS VANFERRELL contact.
+                Give us the shipment essentials and create a clean load brief for your London Trucking contact.
               </p>
               <div className="quote-checklist" data-reveal>
                 <span>ORIGIN + DESTINATION</span>
@@ -1050,7 +1050,7 @@ function App() {
           <a className="footer-up" href="#top" aria-label="Back to top">↑</a>
         </div>
         <div className="footer-bottom">
-          <span>© {new Date().getFullYear()} TRANS VANFERRELL</span>
+          <span>© {new Date().getFullYear()} London Trucking</span>
           <span>GENERAL FREIGHT BROKERAGE</span>
           <span>Brokerage services subject to carrier availability and agreed shipment terms.</span>
         </div>
