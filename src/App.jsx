@@ -427,8 +427,9 @@ const ESTIMATOR_ACCESSORIALS = [
 const ESTIMATOR_MIN_CHARGE = 385;
 const ESTIMATOR_WEIGHT_FREE = 20000;
 const ESTIMATOR_METER_FLOOR = 1;
-const ESTIMATOR_METER_CEIL = 6;
-const ESTIMATOR_METER_TICKS = ["1.00", "2.00", "3.00", "4.00", "5.00", "6.00"];
+const ESTIMATOR_METER_CEIL = 24;
+// Decade ticks, not even ones: the scale is logarithmic.
+const ESTIMATOR_METER_TICKS = [1, 2, 4, 8, 16, 24];
 const ESTIMATOR_GAUGE_SPAN = 1.2;
 
 const estimatorNumber = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
@@ -447,6 +448,15 @@ function floorToStep(value, step) {
 
 function ceilToStep(value, step) {
   return Math.ceil(value / step) * step;
+}
+
+// The per-mile figure spans roughly $1.80 on a long cheap lane to $22.50 on the
+// high edge of a 50-mile minimum-charge haul. A linear axis would pin almost
+// every real lane into the leftmost sixth, so the meter reads logarithmically.
+function logPercentOf(value, min, max) {
+  const span = Math.log(max) - Math.log(min);
+  const at = Math.log(Math.min(max, Math.max(min, value))) - Math.log(min);
+  return (at / span) * 100;
 }
 
 function percentOf(value, min, max) {
@@ -526,8 +536,11 @@ function estimateLane(input) {
   if (weight > 38000) spread += 0.02;
   if (active.length > 1) spread += 0.01;
 
-  const rateLow = floorToStep(mid * (1 - spread), 25);
-  const rateHigh = ceilToStep(mid * (1 + spread), 25);
+  // The minimum charge is a floor on what we will actually book, so the band's
+  // low edge has to respect it too, not just the midpoint. Without this a short
+  // haul prints a band opening below the very floor the ledger says was applied.
+  const rateLow = Math.max(ESTIMATOR_MIN_CHARGE, floorToStep(mid * (1 - spread), 25));
+  const rateHigh = Math.max(rateLow + 25, ceilToStep(mid * (1 + spread), 25));
 
   const perMile = mid / miles;
   const perMileLow = rateLow / miles;
@@ -571,7 +584,7 @@ function estimateLane(input) {
       { code: "MIN", label: "Minimum charge applied", on: floorAdjustment > 0 },
     ],
     fit: estimatorFit({ miles, weight, equipment, service, loadFactor, accessorials }),
-    summary: `Indicative band, ${formatFigure(rateLow)} to ${formatFigure(rateHigh)} US dollars. ${perMile.toFixed(2)} dollars per mile. Transit ${transitLow} to ${transitHigh} days on a ${equipment.label.toLowerCase()}, ${service.label.toLowerCase()} service.`,
+    summary: `Indicative band, ${formatFigure(rateLow)} to ${formatFigure(rateHigh)} US dollars. ${perMile.toFixed(2)} dollars per mile. Transit ${transitLow === transitHigh ? `${transitLow} day${transitLow === 1 ? "" : "s"}` : `${transitLow} to ${transitHigh} days`} on a ${equipment.label.toLowerCase()}, ${service.label.toLowerCase()} service.`,
   };
 }
 
@@ -1848,22 +1861,31 @@ function App() {
                   <div className="meter">
                     <div className="meter__head">
                       <p className="meter__label">Rate per mile, against market scale</p>
-                      <span className="meter__caption" aria-hidden="true">US$1.00 &#8211; US$6.00 / MI</span>
+                      <span className="meter__caption" aria-hidden="true">LOG US$1 &#8211; US$24 / MI</span>
                     </div>
                     <div
                       className="meter__track"
                       aria-hidden="true"
                       style={{
-                        "--band-left": `${percentOf(estimate.perMileLow, ESTIMATOR_METER_FLOOR, ESTIMATOR_METER_CEIL)}%`,
-                        "--band-right": `${100 - percentOf(estimate.perMileHigh, ESTIMATOR_METER_FLOOR, ESTIMATOR_METER_CEIL)}%`,
-                        "--needle": `${percentOf(estimate.perMile, ESTIMATOR_METER_FLOOR, ESTIMATOR_METER_CEIL)}%`,
+                        "--band-left": `${logPercentOf(estimate.perMileLow, ESTIMATOR_METER_FLOOR, ESTIMATOR_METER_CEIL)}%`,
+                        "--band-right": `${100 - logPercentOf(estimate.perMileHigh, ESTIMATOR_METER_FLOOR, ESTIMATOR_METER_CEIL)}%`,
+                        "--needle": `${logPercentOf(estimate.perMile, ESTIMATOR_METER_FLOOR, ESTIMATOR_METER_CEIL)}%`,
                       }}
                     >
                       <span className="meter__band" />
                       <span className="meter__needle" />
                     </div>
                     <p className="meter__scale" aria-hidden="true">
-                      {ESTIMATOR_METER_TICKS.map((tick) => <span key={tick}>{tick}</span>)}
+                      {ESTIMATOR_METER_TICKS.map((tick) => (
+                        <span
+                          key={tick}
+                          style={{
+                            "--at": `${logPercentOf(tick, ESTIMATOR_METER_FLOOR, ESTIMATOR_METER_CEIL)}%`,
+                          }}
+                        >
+                          {tick.toFixed(2)}
+                        </span>
+                      ))}
                     </p>
                   </div>
 

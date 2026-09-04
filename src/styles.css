@@ -2477,14 +2477,32 @@ h2 em {
 }
 
 .meter__scale {
-  display: flex;
-  justify-content: space-between;
+  position: relative;
+  height: 0.75rem;
   margin: 0.4rem 0 0;
   color: var(--forest-76);
   font-family: var(--console-mono);
   font-size: 0.52rem;
   font-weight: 700;
   letter-spacing: 0.06em;
+}
+
+/* Ticks sit at their own logarithmic position, so they cannot be evenly
+   distributed by the flex box the way a linear scale's labels were. */
+.meter__scale span {
+  position: absolute;
+  top: 0;
+  left: var(--at);
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.meter__scale span:first-child {
+  transform: none;
+}
+
+.meter__scale span:last-child {
+  transform: translateX(-100%);
 }
 
 /* --- output: tiles ------------------------------------------ */
