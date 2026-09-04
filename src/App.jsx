@@ -389,6 +389,405 @@ function ServiceDiagram({ service }) {
   );
 }
 
+const ESTIMATOR_LIMITS = {
+  miles: {
+    min: 50,
+    max: 2800,
+    step: 10,
+    initial: 780,
+    ticks: ["50", "750", "1,450", "2,150", "2,800"],
+  },
+  weight: {
+    min: 1000,
+    max: 45000,
+    step: 500,
+    initial: 22000,
+    ticks: ["1K", "12K", "23K", "34K", "45K"],
+  },
+};
+
+const ESTIMATOR_EQUIPMENT = [
+  { id: "van", code: "VAN", label: "Dry van", rate: 1, payload: 45000, fuel: 0.42, transit: 1 },
+  { id: "reefer", code: "RFR", label: "Reefer", rate: 1.18, payload: 43500, fuel: 0.51, transit: 1.05 },
+  { id: "flatbed", code: "FLT", label: "Flatbed", rate: 1.12, payload: 48000, fuel: 0.42, transit: 1.08 },
+];
+
+const ESTIMATOR_SERVICE = [
+  { id: "standard", code: "STD", label: "Standard", rate: 1, milesPerDay: 500, pad: 2, pickup: "24-48 HR", spread: 0.08 },
+  { id: "priority", code: "PRI", label: "Priority", rate: 1.16, milesPerDay: 580, pad: 1, pickup: "12-24 HR", spread: 0.09 },
+  { id: "expedited", code: "EXP", label: "Expedited", rate: 1.42, milesPerDay: 700, pad: 0, pickup: "2-8 HR", spread: 0.12 },
+];
+
+const ESTIMATOR_ACCESSORIALS = [
+  { id: "liftgate", code: "LFT", label: "Liftgate", detail: "Power gate at pickup or delivery", flat: 95, perMile: 0 },
+  { id: "team", code: "TEA", label: "Team drive", detail: "Two drivers, near-continuous movement", flat: 250, perMile: 0.58 },
+  { id: "inside", code: "INS", label: "Inside delivery", detail: "Freight moved past the dock door", flat: 135, perMile: 0 },
+];
+
+const ESTIMATOR_MIN_CHARGE = 385;
+const ESTIMATOR_WEIGHT_FREE = 20000;
+const ESTIMATOR_METER_FLOOR = 1;
+const ESTIMATOR_METER_CEIL = 6;
+const ESTIMATOR_METER_TICKS = ["1.00", "2.00", "3.00", "4.00", "5.00", "6.00"];
+const ESTIMATOR_GAUGE_SPAN = 1.2;
+
+const estimatorNumber = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+
+function formatFigure(value) {
+  return estimatorNumber.format(Math.round(value));
+}
+
+function clampRange(value, range) {
+  return Math.min(range.max, Math.max(range.min, value));
+}
+
+function floorToStep(value, step) {
+  return Math.floor(value / step) * step;
+}
+
+function ceilToStep(value, step) {
+  return Math.ceil(value / step) * step;
+}
+
+function percentOf(value, min, max) {
+  return Math.min(100, Math.max(0, ((value - min) / (max - min)) * 100));
+}
+
+// Per-mile linehaul rate before any multiplier. Tapers with distance: a short
+// haul still has to pay for a whole driver day, a long haul amortises it.
+//    50 mi -> $3.99/mi     400 mi -> $2.40/mi     780 mi -> $1.98/mi
+//  1600 mi -> $1.68/mi    2800 mi -> $1.53/mi
+function estimatorBaseRate(miles) {
+  return 1.32 + 640 / (miles + 190);
+}
+
+// Freight under 20,000 lb rides free. Above that it costs up to 22% more.
+function estimatorWeightFactor(weight) {
+  return 1 + (Math.max(0, weight - ESTIMATOR_WEIGHT_FREE) / 25000) * 0.22;
+}
+
+function estimatorFit(state) {
+  const { miles, weight, equipment, service, loadFactor, accessorials } = state;
+
+  if (weight > equipment.payload) {
+    return `${formatFigure(weight)} lb sits over the ${equipment.label.toLowerCase()} payload line. We would split the freight or source a lightweight tractor before quoting it.`;
+  }
+  if (service.id === "expedited" && miles > 1100 && !accessorials.team) {
+    return `${formatFigure(miles)} mi against an expedited window runs a solo driver out of hours. Add team drive, or expect the delivery window to move.`;
+  }
+  if (miles < 250) {
+    return "Under 250 mi you are buying a driver day, not an odometer reading. The per-mile figure reads high here and that is normal for a short haul.";
+  }
+  if (equipment.id === "reefer" && service.id !== "standard") {
+    return "Temp-controlled capacity on a tight window is the thin part of the market. Give us 48 hours of notice and this band holds.";
+  }
+  if (equipment.id === "flatbed" && loadFactor > 0.8) {
+    return "Heavy open-deck freight. Securement, tarping and permit checks move the final number more than the mileage does.";
+  }
+  if (loadFactor < 0.3 && miles > 900) {
+    return "Light freight on a long lane. Worth pricing this against partial or LTL space before you commit a full trailer.";
+  }
+  if (accessorials.liftgate && accessorials.inside) {
+    return "Liftgate plus inside delivery means dwell at the receiver. Lock the appointment window early so the driver is not sitting.";
+  }
+  if (loadFactor > 0.92) {
+    return "Close to the payload ceiling. Axle weights get checked at the scale, so confirm pallet count and distribution before pickup.";
+  }
+  return `Standard ${equipment.label.toLowerCase()} lane, well inside our regular capacity pool. Expect firm carrier options within a day of the details landing.`;
+}
+
+function estimateLane(input) {
+  const equipment =
+    ESTIMATOR_EQUIPMENT.find((item) => item.id === input.equipmentId) || ESTIMATOR_EQUIPMENT[0];
+  const service =
+    ESTIMATOR_SERVICE.find((item) => item.id === input.serviceId) || ESTIMATOR_SERVICE[0];
+  const accessorials = input.accessorials;
+  const miles = clampRange(input.miles, ESTIMATOR_LIMITS.miles);
+  const weight = clampRange(input.weight, ESTIMATOR_LIMITS.weight);
+
+  const active = ESTIMATOR_ACCESSORIALS.filter((item) => accessorials[item.id]);
+  const baseRate = estimatorBaseRate(miles);
+  const weightFactor = estimatorWeightFactor(weight);
+  const loadedRate = baseRate * equipment.rate * service.rate * weightFactor;
+
+  const linehaul = Math.round(miles * loadedRate);
+  const fuel = Math.round(miles * equipment.fuel);
+  const accessorialTotal = active.reduce(
+    (sum, item) => sum + item.flat + Math.round(item.perMile * miles),
+    0,
+  );
+
+  const raw = linehaul + fuel + accessorialTotal;
+  const floorAdjustment = Math.max(0, ESTIMATOR_MIN_CHARGE - raw);
+  const mid = raw + floorAdjustment;
+
+  let spread = service.spread;
+  if (miles < 350) spread += 0.03;
+  if (weight > 38000) spread += 0.02;
+  if (active.length > 1) spread += 0.01;
+
+  const rateLow = floorToStep(mid * (1 - spread), 25);
+  const rateHigh = ceilToStep(mid * (1 + spread), 25);
+
+  const perMile = mid / miles;
+  const perMileLow = rateLow / miles;
+  const perMileHigh = rateHigh / miles;
+
+  const dailyMiles = service.milesPerDay * (accessorials.team ? 1.8 : 1);
+  const transitLow = Math.max(1, Math.ceil((miles / dailyMiles) * equipment.transit));
+  const transitHigh = transitLow + service.pad + (weight > equipment.payload ? 1 : 0);
+
+  const loadFactor = weight / equipment.payload;
+
+  return {
+    miles,
+    weight,
+    equipment,
+    service,
+    active,
+    baseRate,
+    weightFactor,
+    loadedRate,
+    linehaul,
+    fuel,
+    accessorialTotal,
+    floorAdjustment,
+    mid,
+    spread,
+    rateLow,
+    rateHigh,
+    perMile,
+    perMileLow,
+    perMileHigh,
+    transitLow,
+    transitHigh,
+    loadFactor,
+    lamps: [
+      { code: "OVR", label: "Over payload", on: weight > equipment.payload },
+      { code: "SHT", label: "Short haul", on: miles < 250 },
+      { code: "TEA", label: "Team drive", on: Boolean(accessorials.team) },
+      { code: "EXP", label: "Expedited", on: service.id === "expedited" },
+      { code: "TMP", label: "Temperature control", on: equipment.id === "reefer" },
+      { code: "MIN", label: "Minimum charge applied", on: floorAdjustment > 0 },
+    ],
+    fit: estimatorFit({ miles, weight, equipment, service, loadFactor, accessorials }),
+    summary: `Indicative band, ${formatFigure(rateLow)} to ${formatFigure(rateHigh)} US dollars. ${perMile.toFixed(2)} dollars per mile. Transit ${transitLow} to ${transitHigh} days on a ${equipment.label.toLowerCase()}, ${service.label.toLowerCase()} service.`,
+  };
+}
+
+const TRACK_UNIT = 100;
+const TRACK_RATE = 55;
+const TRACK_SPEEDS = [1, 2, 4];
+const TRACK_VIEW = { w: 1000, h: 560 };
+const TRACK_DAYS = ["TUE", "WED", "THU", "FRI"];
+const TRACK_START_MINUTES = 7 * 60;
+
+const trackerMilestones = [
+  {
+    code: "01",
+    status: "Booked",
+    place: "Dallas, TX / Broker desk",
+    detail:
+      "Lane confirmed and rate agreed. Load number LDN-77413 issued, shipper contacted for dock hours.",
+    hour: 0,
+    mile: 0,
+    coord: [32.814, -96.87],
+    point: [84, 468],
+  },
+  {
+    code: "02",
+    status: "Carrier assigned",
+    place: "Dallas, TX / Dispatch",
+    detail:
+      "Capacity matched: 53-foot dry van. Authority and insurance verified, driver dispatched to the shipper.",
+    hour: 3,
+    mile: 0,
+    coord: [32.7767, -96.797],
+    point: [206, 448],
+  },
+  {
+    code: "03",
+    status: "Picked up",
+    place: "Garland, TX / Shipper dock",
+    detail:
+      "Loaded and sealed. 18 pallets, 24,400 lbs, seal LDN-4471, bill of lading signed at the gate.",
+    hour: 9,
+    mile: 12,
+    coord: [32.9126, -96.6389],
+    point: [322, 476],
+  },
+  {
+    code: "04",
+    status: "In transit",
+    place: "I-30 near Little Rock, AR",
+    detail:
+      "Rolling northeast on the primary corridor. Position and hours of service checked every four hours.",
+    hour: 22,
+    mile: 320,
+    coord: [34.7465, -92.2896],
+    point: [470, 372],
+  },
+  {
+    code: "05",
+    status: "Checkpoint",
+    place: "Litchfield, IL / Scale house",
+    detail:
+      "Weigh station cleared and DOT inspection passed. Seal intact, 41 minutes against the clock.",
+    hour: 33,
+    mile: 610,
+    coord: [39.1753, -89.654],
+    point: [620, 292],
+  },
+  {
+    code: "06",
+    status: "Out for delivery",
+    place: "Bolingbrook, IL / Final leg",
+    detail:
+      "Trailer staged overnight near the receiver. Appointment confirmed for the 09:00 dock window.",
+    hour: 47,
+    mile: 890,
+    coord: [41.6986, -88.0684],
+    point: [786, 168],
+  },
+  {
+    code: "07",
+    status: "Delivered",
+    place: "Chicago, IL / Receiver dock",
+    detail:
+      "Unloaded, counted, and signed. Proof of delivery attached to the load file and sent to the shipper.",
+    hour: 50,
+    mile: 925,
+    coord: [41.8781, -87.6298],
+    point: [918, 104],
+  },
+];
+
+const trackerLegs = [
+  { c1: [126, 452], c2: [166, 440] },
+  { c1: [250, 456], c2: [286, 472] },
+  { c1: [382, 482], c2: [418, 412] },
+  { c1: [520, 336], c2: [566, 318] },
+  { c1: [686, 262], c2: [734, 220] },
+  { c1: [828, 128], c2: [872, 110] },
+];
+
+const TRACK_MAX = trackerLegs.length * TRACK_UNIT;
+const TRACK_TOTAL_MILES = trackerMilestones[trackerMilestones.length - 1].mile;
+
+const trackerRoutePath = trackerLegs.reduce((path, leg, index) => {
+  const end = trackerMilestones[index + 1].point;
+  return `${path} C ${leg.c1[0]} ${leg.c1[1]} ${leg.c2[0]} ${leg.c2[1]} ${end[0]} ${end[1]}`;
+}, `M ${trackerMilestones[0].point[0]} ${trackerMilestones[0].point[1]}`);
+
+function trackLerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function trackLerpPoint(a, b, t) {
+  return [trackLerp(a[0], b[0], t), trackLerp(a[1], b[1], t)];
+}
+
+function trackLegPoints(legIndex) {
+  const leg = trackerLegs[legIndex];
+  return [
+    trackerMilestones[legIndex].point,
+    leg.c1,
+    leg.c2,
+    trackerMilestones[legIndex + 1].point,
+  ];
+}
+
+// De Casteljau: exact point, tangent heading, and the left-hand split of the leg.
+function trackCubicAt(points, t) {
+  const [p0, p1, p2, p3] = points;
+  const a = trackLerpPoint(p0, p1, t);
+  const b = trackLerpPoint(p1, p2, t);
+  const c = trackLerpPoint(p2, p3, t);
+  const d = trackLerpPoint(a, b, t);
+  const e = trackLerpPoint(b, c, t);
+  const point = trackLerpPoint(d, e, t);
+  let dx = e[0] - d[0];
+  let dy = e[1] - d[1];
+  if (dx === 0 && dy === 0) {
+    dx = p3[0] - p0[0];
+    dy = p3[1] - p0[1];
+  }
+  return { point, heading: (Math.atan2(dy, dx) * 180) / Math.PI, left: [p0, a, d, point] };
+}
+
+function trackSegment(position) {
+  const clamped = Math.min(Math.max(position, 0), TRACK_MAX);
+  const rawLeg = Math.floor(clamped / TRACK_UNIT);
+  const legIndex = Math.min(rawLeg, trackerLegs.length - 1);
+  return {
+    clamped,
+    legIndex,
+    legT: (clamped - legIndex * TRACK_UNIT) / TRACK_UNIT,
+    index: Math.min(rawLeg, trackerLegs.length),
+  };
+}
+
+function trackerTraveledPath(position) {
+  const { legIndex, legT } = trackSegment(position);
+  const origin = trackerMilestones[0].point;
+  let path = `M ${origin[0]} ${origin[1]}`;
+  for (let i = 0; i < legIndex; i += 1) {
+    const [, c1, c2, end] = trackLegPoints(i);
+    path += ` C ${c1[0]} ${c1[1]} ${c2[0]} ${c2[1]} ${end[0]} ${end[1]}`;
+  }
+  const [, a, b, c] = trackCubicAt(trackLegPoints(legIndex), legT).left;
+  return `${path} C ${a[0].toFixed(2)} ${a[1].toFixed(2)} ${b[0].toFixed(2)} ${b[1].toFixed(2)} ${c[0].toFixed(2)} ${c[1].toFixed(2)}`;
+}
+
+function formatTrackClock(hours) {
+  const total = TRACK_START_MINUTES + Math.round(hours * 60);
+  const day = TRACK_DAYS[Math.min(Math.floor(total / 1440), TRACK_DAYS.length - 1)];
+  const rest = total % 1440;
+  return `${day} ${String(Math.floor(rest / 60)).padStart(2, "0")}:${String(rest % 60).padStart(2, "0")}`;
+}
+
+function formatTrackElapsed(hours) {
+  const total = Math.max(0, Math.round(hours * 60));
+  const days = Math.floor(total / 1440);
+  const hh = Math.floor((total % 1440) / 60);
+  if (days > 0) return `${days}D ${String(hh).padStart(2, "0")}H`;
+  return `${String(hh).padStart(2, "0")}H ${String(total % 60).padStart(2, "0")}M`;
+}
+
+function formatTrackMiles(miles) {
+  return Math.round(miles).toLocaleString("en-US");
+}
+
+function formatTrackCoord(coord) {
+  return `${coord[0].toFixed(3)}° N / ${Math.abs(coord[1]).toFixed(3)}° W`;
+}
+
+function trackerReadout(position) {
+  const { clamped, legIndex, legT, index } = trackSegment(position);
+  const from = trackerMilestones[legIndex];
+  const to = trackerMilestones[legIndex + 1];
+  const { point, heading } = trackCubicAt(trackLegPoints(legIndex), legT);
+  const miles = trackLerp(from.mile, to.mile, legT);
+
+  return {
+    position: clamped,
+    index,
+    point,
+    heading,
+    hours: trackLerp(from.hour, to.hour, legT),
+    miles,
+    milesLeft: TRACK_TOTAL_MILES - miles,
+    coord: [
+      trackLerp(from.coord[0], to.coord[0], legT),
+      trackLerp(from.coord[1], to.coord[1], legT),
+    ],
+    current: trackerMilestones[index],
+    next: index < trackerLegs.length ? trackerMilestones[index + 1] : null,
+    progress: clamped / TRACK_MAX,
+    moving: legT > 0.001 && legT < 0.999,
+  };
+}
+
 function App() {
   const appRef = useRef(null);
   const menuToggleRef = useRef(null);
@@ -688,6 +1087,358 @@ function App() {
     if (quoteBrief) setQuoteBrief("");
   };
 
+  // Lane estimator — refs
+  const consoleRef = useRef(null);
+  const rateLowRef = useRef(null);
+  const rateHighRef = useRef(null);
+  const rateMileRef = useRef(null);
+  const rateProxyRef = useRef({ low: 0, high: 0, mile: 0 });
+
+  // Lane estimator — state
+  const [laneMiles, setLaneMiles] = useState(ESTIMATOR_LIMITS.miles.initial);
+  const [laneWeight, setLaneWeight] = useState(ESTIMATOR_LIMITS.weight.initial);
+  const [laneEquipment, setLaneEquipment] = useState("van");
+  const [laneService, setLaneService] = useState("standard");
+  const [laneAccessorials, setLaneAccessorials] = useState({
+    liftgate: false,
+    team: false,
+    inside: false,
+  });
+  const [laneSummary, setLaneSummary] = useState("");
+
+  // Lane estimator — derived. estimateLane is pure and cheap (a dozen multiplies),
+  // so it runs every render; no memo needed and no stale-state class of bug.
+  const estimate = estimateLane({
+    miles: laneMiles,
+    weight: laneWeight,
+    equipmentId: laneEquipment,
+    serviceId: laneService,
+    accessorials: laneAccessorials,
+  });
+  const milesFill = percentOf(laneMiles, ESTIMATOR_LIMITS.miles.min, ESTIMATOR_LIMITS.miles.max);
+  const weightFill = percentOf(laneWeight, ESTIMATOR_LIMITS.weight.min, ESTIMATOR_LIMITS.weight.max);
+
+  // Lane estimator — handlers
+  const nudgeMiles = (delta) =>
+    setLaneMiles((value) => clampRange(value + delta, ESTIMATOR_LIMITS.miles));
+  const nudgeWeight = (delta) =>
+    setLaneWeight((value) => clampRange(value + delta, ESTIMATOR_LIMITS.weight));
+  const toggleAccessorial = (id) =>
+    setLaneAccessorials((previous) => ({ ...previous, [id]: !previous[id] }));
+
+  // Lane estimator — odometer roll on the three headline figures.
+  // React deliberately renders those three spans EMPTY and GSAP owns their
+  // textContent, so the two never fight over the same text node. The accessible
+  // copy of every figure is rendered by React as sibling .sr-only text.
+  useLayoutEffect(() => {
+    const lowNode = rateLowRef.current;
+    const highNode = rateHighRef.current;
+    const mileNode = rateMileRef.current;
+    if (!lowNode || !highNode || !mileNode) return undefined;
+
+    const proxy = rateProxyRef.current;
+    const paint = () => {
+      lowNode.textContent = formatFigure(proxy.low);
+      highNode.textContent = formatFigure(proxy.high);
+      mileNode.textContent = proxy.mile.toFixed(2);
+    };
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      proxy.low = estimate.rateLow;
+      proxy.high = estimate.rateHigh;
+      proxy.mile = estimate.perMile;
+      paint();
+      return undefined;
+    }
+
+    paint();
+
+    const context = gsap.context(() => {
+      gsap.to(proxy, {
+        low: estimate.rateLow,
+        high: estimate.rateHigh,
+        mile: estimate.perMile,
+        duration: 0.42,
+        ease: "power2.out",
+        overwrite: true,
+        onUpdate: paint,
+      });
+    }, consoleRef);
+
+    // kill(), not revert(): the tween target is a plain object, and reverting
+    // would rewind it to the previous figures a frame before the next tween
+    // reads them as its start values.
+    return () => context.kill();
+  }, [estimate.rateLow, estimate.rateHigh, estimate.perMile]);
+
+  // Lane estimator — one-shot power-on sequence when the console scrolls in.
+  useLayoutEffect(() => {
+    const root = consoleRef.current;
+    if (!root) return undefined;
+
+    const mm = gsap.matchMedia();
+    const context = gsap.context(() => {
+      mm.add("(prefers-reduced-motion: no-preference)", () => {
+        gsap.from(".channel, .console__group", {
+          y: 18,
+          autoAlpha: 0,
+          duration: 0.5,
+          stagger: 0.08,
+          ease: "power3.out",
+          scrollTrigger: { trigger: root, start: "top 78%", once: true },
+        });
+
+        gsap.from(".tile, .ledger tbody tr", {
+          autoAlpha: 0,
+          duration: 0.28,
+          stagger: 0.035,
+          ease: "none",
+          scrollTrigger: { trigger: root, start: "top 72%", once: true },
+        });
+
+        gsap.from(".lamp", {
+          autoAlpha: 0.15,
+          duration: 0.14,
+          ease: "steps(1)",
+          stagger: { each: 0.06, repeat: 1, yoyo: true },
+          scrollTrigger: { trigger: root, start: "top 62%", once: true },
+        });
+      });
+    }, consoleRef);
+
+    return () => {
+      mm.revert();
+      context.revert();
+    };
+  }, []);
+
+  // Lane estimator — debounced screen-reader summary. Dragging a fader fires
+  // dozens of updates a second; announcing each one is unusable, so the polite
+  // region only takes the value once the panel has been still for 700ms.
+  useEffect(() => {
+    const timer = window.setTimeout(() => setLaneSummary(estimate.summary), 700);
+    return () => window.clearTimeout(timer);
+  }, [estimate.summary]);
+
+  // --- state + refs -----------------------------------------------------------
+  const trackerRef = useRef(null);
+  const trackMapRef = useRef(null);
+  const trackPhaseRef = useRef(null);
+  const trackNodeRefs = useRef([]);
+  const trackPositionRef = useRef(0);
+  const trackSpeedRef = useRef(1);
+  const trackTouchedRef = useRef(false);
+  const trackArmedRef = useRef(false);
+  const [trackPosition, setTrackPosition] = useState(0);
+  const [trackPlaying, setTrackPlaying] = useState(false);
+  const [trackSpeed, setTrackSpeed] = useState(1);
+  const [trackFocusIndex, setTrackFocusIndex] = useState(0);
+  const [trackGlide, setTrackGlide] = useState(null);
+
+  // --- derived values, computed in the render body ----------------------------
+  const trackRead = trackerReadout(trackPosition);
+  const trackTraveled = trackerTraveledPath(trackPosition);
+  const trackIndex = trackRead.index;
+  const trackTruckX = trackRead.point[0];
+  const trackAtEnd = trackRead.position >= TRACK_MAX;
+  const trackPlayLabel = trackPlaying ? "Pause" : trackAtEnd ? "Replay" : "Play";
+  const trackStateLabel = trackAtEnd ? "Delivered" : trackRead.moving ? "En route" : "At stage";
+  const trackScrubText = `Stage ${trackRead.current.code} of 07, ${trackRead.current.status}. ${Math.round(
+    trackRead.progress * 100,
+  )} percent of route, ${formatTrackMiles(trackRead.miles)} miles run, elapsed ${formatTrackElapsed(
+    trackRead.hours,
+  )}.`;
+
+  // --- handlers ---------------------------------------------------------------
+  const setTrackTo = (value) => {
+    const clamped = Math.min(Math.max(value, 0), TRACK_MAX);
+    trackPositionRef.current = clamped;
+    setTrackPosition(clamped);
+  };
+
+  const toggleTrackPlay = () => {
+    trackTouchedRef.current = true;
+    setTrackGlide(null);
+    if (trackPlaying) {
+      setTrackPlaying(false);
+      return;
+    }
+    if (trackPositionRef.current >= TRACK_MAX) setTrackTo(0);
+    setTrackPlaying(true);
+  };
+
+  const glideToMilestone = (index) => {
+    trackTouchedRef.current = true;
+    setTrackPlaying(false);
+    setTrackFocusIndex(index);
+
+    const to = index * TRACK_UNIT;
+    const from = trackPositionRef.current;
+    if (Math.abs(to - from) < 0.5) {
+      setTrackGlide(null);
+      setTrackTo(to);
+      return;
+    }
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setTrackGlide(null);
+      setTrackTo(to);
+      return;
+    }
+    setTrackGlide({ from, to, duration: 260 + (Math.abs(to - from) / TRACK_MAX) * 900 });
+  };
+
+  const handleTrackPrev = () =>
+    glideToMilestone(Math.max(0, Math.ceil(trackPositionRef.current / TRACK_UNIT) - 1));
+
+  const handleTrackNext = () =>
+    glideToMilestone(
+      Math.min(trackerLegs.length, Math.floor(trackPositionRef.current / TRACK_UNIT) + 1),
+    );
+
+  const handleTrackRestart = () => {
+    trackTouchedRef.current = true;
+    setTrackPlaying(false);
+    setTrackGlide(null);
+    setTrackFocusIndex(0);
+    setTrackTo(0);
+  };
+
+  const handleTrackScrub = (event) => {
+    trackTouchedRef.current = true;
+    setTrackPlaying(false);
+    setTrackGlide(null);
+    setTrackTo(Number(event.target.value));
+  };
+
+  const handleTrackNodeKeys = (event, index) => {
+    const last = trackerMilestones.length - 1;
+    let next = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") next = Math.min(index + 1, last);
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = Math.max(index - 1, 0);
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = last;
+    if (next === null) return;
+    event.preventDefault();
+    setTrackFocusIndex(next);
+    trackNodeRefs.current[next]?.focus();
+  };
+
+  // --- effects ----------------------------------------------------------------
+  useEffect(() => {
+    trackSpeedRef.current = trackSpeed;
+  }, [trackSpeed]);
+
+  // Playback loop. Stops cleanly at the end and cancels its frame on unmount.
+  useEffect(() => {
+    if (!trackPlaying) return undefined;
+
+    let frame = 0;
+    let last = performance.now();
+
+    const step = (now) => {
+      const delta = Math.min((now - last) / 1000, 0.05);
+      last = now;
+      const next = trackPositionRef.current + delta * TRACK_RATE * trackSpeedRef.current;
+
+      if (next >= TRACK_MAX) {
+        trackPositionRef.current = TRACK_MAX;
+        setTrackPosition(TRACK_MAX);
+        setTrackPlaying(false);
+        return;
+      }
+
+      trackPositionRef.current = next;
+      setTrackPosition(next);
+      frame = window.requestAnimationFrame(step);
+    };
+
+    frame = window.requestAnimationFrame(step);
+    return () => window.cancelAnimationFrame(frame);
+  }, [trackPlaying]);
+
+  // Eased glide when a node, prev, or next is used: the truck drives, never teleports.
+  useEffect(() => {
+    if (!trackGlide) return undefined;
+
+    const { from, to, duration } = trackGlide;
+    let frame = 0;
+    const started = performance.now();
+
+    const run = (now) => {
+      const t = Math.min((now - started) / duration, 1);
+      const eased = t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2;
+      const value = from + (to - from) * eased;
+      trackPositionRef.current = value;
+      setTrackPosition(value);
+      if (t < 1) {
+        frame = window.requestAnimationFrame(run);
+        return;
+      }
+      setTrackGlide(null);
+    };
+
+    frame = window.requestAnimationFrame(run);
+    return () => window.cancelAnimationFrame(frame);
+  }, [trackGlide]);
+
+  // Arm auto-play once, on entry, only for visitors who have not asked for less
+  // motion and have not already taken control. Pause whenever it leaves the screen.
+  useEffect(() => {
+    const node = trackerRef.current;
+    if (!node || typeof IntersectionObserver === "undefined") return undefined;
+
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) {
+            setTrackPlaying(false);
+            return;
+          }
+          if (reduced.matches || trackTouchedRef.current || trackArmedRef.current) return;
+          trackArmedRef.current = true;
+          setTrackPlaying(true);
+        });
+      },
+      { threshold: 0.45 },
+    );
+
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  // Keep the truck in view when the map has to scroll horizontally on small screens.
+  useEffect(() => {
+    const map = trackMapRef.current;
+    if (!map) return;
+    const overflow = map.scrollWidth - map.clientWidth;
+    if (overflow <= 1) return;
+    const target = (trackTruckX / TRACK_VIEW.w) * map.scrollWidth - map.clientWidth / 2;
+    map.scrollLeft = Math.min(Math.max(target, 0), overflow);
+  }, [trackTruckX]);
+
+  // Milestone flourish: readout copy settles in, the reached node throws one ring.
+  useEffect(() => {
+    if (!trackerRef.current || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return undefined;
+    }
+
+    const context = gsap.context(() => {
+      gsap.fromTo(
+        ".tracker__phase-title, .tracker__phase-place, .tracker__phase-note",
+        { autoAlpha: 0, y: 14 },
+        { autoAlpha: 1, y: 0, duration: 0.4, stagger: 0.06, ease: "power3.out", overwrite: "auto" },
+      );
+      gsap.fromTo(
+        ".tracker__node.is-current .tracker__node-ring",
+        { scale: 0.35, autoAlpha: 0.85 },
+        { scale: 2.4, autoAlpha: 0, duration: 0.85, ease: "power2.out", overwrite: "auto" },
+      );
+    }, trackerRef);
+
+    return () => context.revert();
+  }, [trackIndex]);
+
   return (
     <div className="site" ref={appRef}>
       <a className="skip-link" href="#main">Skip to content</a>
@@ -874,12 +1625,712 @@ function App() {
           </div>
         </section>
 
+        <section className="estimator" id="estimate">
+          <div className="estimator__backdrop" data-parallax="-6" aria-hidden="true" />
+
+          <div className="section-wrap">
+            <div className="estimator__heading">
+              <div className="section-index" data-reveal>
+                <span>03</span>
+                <p>Lane estimator</p>
+              </div>
+              <h2 data-reveal>Tune the lane.<br /><em>Read the number.</em></h2>
+              <p data-reveal>
+                Move the controls and the console recalculates. Distance taper, equipment, service level and accessorials all price in front of you, with the arithmetic left on the panel.
+              </p>
+            </div>
+
+            <div className="console" ref={consoleRef} data-reveal>
+              <div className="console__bar">
+                <span className="console__bar-id">LDN / LANE ESTIMATOR</span>
+                <span className="console__bar-rev">REV 24.3 &middot; US DOMESTIC</span>
+                <span className="console__bar-lamp"><i aria-hidden="true" />LIVE</span>
+              </div>
+
+              <div className="console__grid">
+                <div className="console__bank console__bank--input">
+                  <div className="console__bank-head">
+                    <h3 className="console__bank-title">Input bank</h3>
+                    <span className="console__bank-meta">05 CHANNELS</span>
+                  </div>
+
+                  <div className="channel">
+                    <div className="channel__head">
+                      <label className="channel__label" htmlFor="ldn-miles">Trip distance</label>
+                      <div className="channel__trim">
+                        <button
+                          className="channel__trim-key"
+                          type="button"
+                          aria-label="Decrease trip distance by 10 miles"
+                          onClick={() => nudgeMiles(-ESTIMATOR_LIMITS.miles.step)}
+                        >
+                          &#8722;
+                        </button>
+                        <p className="channel__value">
+                          <span className="channel__digits">{formatFigure(laneMiles)}</span>
+                          <span className="channel__unit">MI</span>
+                        </p>
+                        <button
+                          className="channel__trim-key"
+                          type="button"
+                          aria-label="Increase trip distance by 10 miles"
+                          onClick={() => nudgeMiles(ESTIMATOR_LIMITS.miles.step)}
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                    <div className="channel__shell" style={{ "--fill": `${milesFill}%` }}>
+                      <span className="channel__ruler" aria-hidden="true" />
+                      <span className="channel__fill" aria-hidden="true" />
+                      <input
+                        className="channel__fader"
+                        id="ldn-miles"
+                        type="range"
+                        min={ESTIMATOR_LIMITS.miles.min}
+                        max={ESTIMATOR_LIMITS.miles.max}
+                        step={ESTIMATOR_LIMITS.miles.step}
+                        value={laneMiles}
+                        aria-valuetext={`${formatFigure(laneMiles)} miles`}
+                        onChange={(event) => setLaneMiles(Number(event.target.value))}
+                      />
+                    </div>
+                    <p className="channel__scale" aria-hidden="true">
+                      {ESTIMATOR_LIMITS.miles.ticks.map((tick) => <span key={tick}>{tick}</span>)}
+                    </p>
+                  </div>
+
+                  <div className="channel">
+                    <div className="channel__head">
+                      <label className="channel__label" htmlFor="ldn-weight">Freight weight</label>
+                      <div className="channel__trim">
+                        <button
+                          className="channel__trim-key"
+                          type="button"
+                          aria-label="Decrease freight weight by 500 pounds"
+                          onClick={() => nudgeWeight(-ESTIMATOR_LIMITS.weight.step)}
+                        >
+                          &#8722;
+                        </button>
+                        <p className="channel__value">
+                          <span className="channel__digits">{formatFigure(laneWeight)}</span>
+                          <span className="channel__unit">LB</span>
+                        </p>
+                        <button
+                          className="channel__trim-key"
+                          type="button"
+                          aria-label="Increase freight weight by 500 pounds"
+                          onClick={() => nudgeWeight(ESTIMATOR_LIMITS.weight.step)}
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                    <div className="channel__shell" style={{ "--fill": `${weightFill}%` }}>
+                      <span className="channel__ruler" aria-hidden="true" />
+                      <span className="channel__fill" aria-hidden="true" />
+                      <input
+                        className="channel__fader"
+                        id="ldn-weight"
+                        type="range"
+                        min={ESTIMATOR_LIMITS.weight.min}
+                        max={ESTIMATOR_LIMITS.weight.max}
+                        step={ESTIMATOR_LIMITS.weight.step}
+                        value={laneWeight}
+                        aria-valuetext={`${formatFigure(laneWeight)} pounds`}
+                        onChange={(event) => setLaneWeight(Number(event.target.value))}
+                      />
+                    </div>
+                    <p className="channel__scale" aria-hidden="true">
+                      {ESTIMATOR_LIMITS.weight.ticks.map((tick) => <span key={tick}>{tick}</span>)}
+                    </p>
+                  </div>
+
+                  <fieldset className="console__group">
+                    <legend className="console__group-label">Equipment</legend>
+                    <div className="seg">
+                      {ESTIMATOR_EQUIPMENT.map((item) => (
+                        <label className="seg__key" key={item.id}>
+                          <input
+                            className="seg__input"
+                            type="radio"
+                            name="ldn-equipment"
+                            value={item.id}
+                            checked={laneEquipment === item.id}
+                            onChange={() => setLaneEquipment(item.id)}
+                          />
+                          <span className="seg__face">
+                            <span className="seg__code" aria-hidden="true">{item.code}</span>
+                            <span className="seg__name">{item.label}</span>
+                            <span className="seg__meta" aria-hidden="true">&#215;{item.rate.toFixed(2)}</span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+
+                  <fieldset className="console__group">
+                    <legend className="console__group-label">Service level</legend>
+                    <div className="seg">
+                      {ESTIMATOR_SERVICE.map((item) => (
+                        <label className="seg__key" key={item.id}>
+                          <input
+                            className="seg__input"
+                            type="radio"
+                            name="ldn-service"
+                            value={item.id}
+                            checked={laneService === item.id}
+                            onChange={() => setLaneService(item.id)}
+                          />
+                          <span className="seg__face">
+                            <span className="seg__code" aria-hidden="true">{item.code}</span>
+                            <span className="seg__name">{item.label}</span>
+                            <span className="seg__meta" aria-hidden="true">{item.pickup}</span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+
+                  <fieldset className="console__group console__group--wide">
+                    <legend className="console__group-label">Accessorials</legend>
+                    <div className="toggles">
+                      {ESTIMATOR_ACCESSORIALS.map((item) => (
+                        <label className="toggle" key={item.id}>
+                          <input
+                            className="toggle__input"
+                            type="checkbox"
+                            checked={laneAccessorials[item.id]}
+                            onChange={() => toggleAccessorial(item.id)}
+                          />
+                          <span className="toggle__face">
+                            <span className="toggle__led" aria-hidden="true" />
+                            <span className="toggle__body">
+                              <span className="toggle__name">{item.label}</span>
+                              <span className="toggle__detail">{item.detail}</span>
+                            </span>
+                            <span className="toggle__cost">
+                              {`+$${formatFigure(item.flat + item.perMile * laneMiles)}`}
+                            </span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                </div>
+
+                <div className="console__bank console__bank--output">
+                  <div className="console__bank-head">
+                    <h3 className="console__bank-title">Output bank</h3>
+                    <span className="console__bank-meta">RECALCULATED LIVE</span>
+                  </div>
+
+                  <p className="sr-only" role="status" aria-live="polite">{laneSummary}</p>
+
+                  <div className="readout">
+                    <div className="readout__head">
+                      <p className="readout__label">Indicative rate band</p>
+                      <span className="readout__tag" aria-hidden="true">
+                        &#177;{Math.round(estimate.spread * 100)}%
+                      </span>
+                    </div>
+                    <p className="band__figure">
+                      <span className="band__currency" aria-hidden="true">US$</span>
+                      <span className="band__value" ref={rateLowRef} aria-hidden="true" />
+                      <span className="band__dash" aria-hidden="true">&#8211;</span>
+                      <span className="band__value" ref={rateHighRef} aria-hidden="true" />
+                      <span className="sr-only">
+                        {`US$ ${formatFigure(estimate.rateLow)} to US$ ${formatFigure(estimate.rateHigh)}, plus or minus ${Math.round(estimate.spread * 100)} percent`}
+                      </span>
+                    </p>
+                  </div>
+
+                  <div className="meter">
+                    <div className="meter__head">
+                      <p className="meter__label">Rate per mile, against market scale</p>
+                      <span className="meter__caption" aria-hidden="true">US$1.00 &#8211; US$6.00 / MI</span>
+                    </div>
+                    <div
+                      className="meter__track"
+                      aria-hidden="true"
+                      style={{
+                        "--band-left": `${percentOf(estimate.perMileLow, ESTIMATOR_METER_FLOOR, ESTIMATOR_METER_CEIL)}%`,
+                        "--band-right": `${100 - percentOf(estimate.perMileHigh, ESTIMATOR_METER_FLOOR, ESTIMATOR_METER_CEIL)}%`,
+                        "--needle": `${percentOf(estimate.perMile, ESTIMATOR_METER_FLOOR, ESTIMATOR_METER_CEIL)}%`,
+                      }}
+                    >
+                      <span className="meter__band" />
+                      <span className="meter__needle" />
+                    </div>
+                    <p className="meter__scale" aria-hidden="true">
+                      {ESTIMATOR_METER_TICKS.map((tick) => <span key={tick}>{tick}</span>)}
+                    </p>
+                  </div>
+
+                  <div className="tiles">
+                    <div className="tile">
+                      <p className="tile__label">Rate / mile</p>
+                      <p className="tile__value">
+                        <span className="tile__prefix" aria-hidden="true">US$</span>
+                        <span className="tile__figure" ref={rateMileRef} aria-hidden="true" />
+                        <span className="sr-only">{`US$ ${estimate.perMile.toFixed(2)} per mile`}</span>
+                      </p>
+                      <p className="tile__sub">
+                        {`${estimate.perMileLow.toFixed(2)} to ${estimate.perMileHigh.toFixed(2)} across band`}
+                      </p>
+                    </div>
+                    <div className="tile">
+                      <p className="tile__label">Transit window</p>
+                      <p className="tile__value">
+                        <span className="tile__figure">
+                          {estimate.transitLow === estimate.transitHigh
+                            ? estimate.transitLow
+                            : `${estimate.transitLow}–${estimate.transitHigh}`}
+                        </span>
+                        <span className="tile__unit">DAYS</span>
+                      </p>
+                      <p className="tile__sub">
+                        {`${formatFigure(estimate.service.milesPerDay * (laneAccessorials.team ? 1.8 : 1))} mi per day pace`}
+                      </p>
+                    </div>
+                    <div className="tile">
+                      <p className="tile__label">Pickup window</p>
+                      <p className="tile__value">
+                        <span className="tile__figure tile__figure--short">{estimate.service.pickup}</span>
+                      </p>
+                      <p className="tile__sub">
+                        {`From confirmed details, ${estimate.service.label.toLowerCase()}`}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="gauge">
+                    <div className="gauge__head">
+                      <p className="gauge__label">Payload load factor</p>
+                      <p className="gauge__value">
+                        {Math.round(estimate.loadFactor * 100)}
+                        <span aria-hidden="true">%</span>
+                        <span className="sr-only"> percent of payload</span>
+                      </p>
+                    </div>
+                    <div
+                      className="gauge__bar"
+                      aria-hidden="true"
+                      style={{
+                        "--fill": `${Math.min(100, (estimate.loadFactor / ESTIMATOR_GAUGE_SPAN) * 100)}%`,
+                        "--redline": `${(1 / ESTIMATOR_GAUGE_SPAN) * 100}%`,
+                      }}
+                    >
+                      <span className="gauge__bar-fill" />
+                      <span className="gauge__redline" />
+                    </div>
+                    <p className="gauge__scale" aria-hidden="true">
+                      <span>0 LB</span>
+                      <span>REDLINE {formatFigure(estimate.equipment.payload)} LB</span>
+                    </p>
+                  </div>
+
+                  <table className="ledger">
+                    <caption className="ledger__caption">Rate build</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">Line</th>
+                        <th scope="col">Basis</th>
+                        <th scope="col">US$</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <th scope="row">Base rate</th>
+                        <td className="ledger__note">TAPER f({formatFigure(estimate.miles)} MI)</td>
+                        <td className="ledger__figure">{estimate.baseRate.toFixed(2)} / MI</td>
+                      </tr>
+                      <tr>
+                        <th scope="row">Equipment</th>
+                        <td className="ledger__note">{estimate.equipment.code}</td>
+                        <td className="ledger__figure">&#215;{estimate.equipment.rate.toFixed(2)}</td>
+                      </tr>
+                      <tr>
+                        <th scope="row">Service level</th>
+                        <td className="ledger__note">{estimate.service.code}</td>
+                        <td className="ledger__figure">&#215;{estimate.service.rate.toFixed(2)}</td>
+                      </tr>
+                      <tr>
+                        <th scope="row">Weight</th>
+                        <td className="ledger__note">{formatFigure(estimate.weight)} LB</td>
+                        <td className="ledger__figure">&#215;{estimate.weightFactor.toFixed(3)}</td>
+                      </tr>
+                      <tr className="ledger__row--split">
+                        <th scope="row">Linehaul</th>
+                        <td className="ledger__note">
+                          {formatFigure(estimate.miles)} MI &#215; {estimate.loadedRate.toFixed(2)}
+                        </td>
+                        <td className="ledger__figure">{formatFigure(estimate.linehaul)}</td>
+                      </tr>
+                      <tr>
+                        <th scope="row">Fuel surcharge</th>
+                        <td className="ledger__note">
+                          {formatFigure(estimate.miles)} MI &#215; {estimate.equipment.fuel.toFixed(2)}
+                        </td>
+                        <td className="ledger__figure">{formatFigure(estimate.fuel)}</td>
+                      </tr>
+                      <tr>
+                        <th scope="row">Accessorials</th>
+                        <td className="ledger__note">
+                          {estimate.active.length
+                            ? estimate.active.map((item) => item.code).join(" + ")
+                            : "NONE"}
+                        </td>
+                        <td className="ledger__figure">{formatFigure(estimate.accessorialTotal)}</td>
+                      </tr>
+                      {estimate.floorAdjustment > 0 && (
+                        <tr>
+                          <th scope="row">Minimum charge</th>
+                          <td className="ledger__note">FLOOR {formatFigure(ESTIMATOR_MIN_CHARGE)}</td>
+                          <td className="ledger__figure">{formatFigure(estimate.floorAdjustment)}</td>
+                        </tr>
+                      )}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <th scope="row">Indicative mid</th>
+                        <td className="ledger__note">SPREAD &#177;{Math.round(estimate.spread * 100)}%</td>
+                        <td className="ledger__figure">{formatFigure(estimate.mid)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+
+                  <div className="lamps">
+                    <p className="lamps__label" id="ldn-lamps-label">Status</p>
+                    <ul className="lamps__list" aria-labelledby="ldn-lamps-label">
+                      {estimate.lamps.map((lamp) => (
+                        <li className={`lamp${lamp.on ? " is-on" : ""}`} key={lamp.code}>
+                          <span className="lamp__led" aria-hidden="true" />
+                          <span className="lamp__code" aria-hidden="true">{lamp.code}</span>
+                          <span className="sr-only">
+                            {`${lamp.label}: ${lamp.on ? "active" : "clear"}`}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div className="fit">
+                    <p className="fit__label">Fit note</p>
+                    <p className="fit__text">{estimate.fit}</p>
+                  </div>
+                </div>
+              </div>
+
+              <p className="console__disclaimer">
+                <span className="console__disclaimer-chip">Indicative only</span>
+                <span>
+                  A modelled figure, not a quote and not a binding rate. Real pricing moves with live capacity, appointment times, accessorial detail and what equipment is actually available on the day. Send the lane over and we will price it properly.
+                </span>
+              </p>
+            </div>
+
+            <p className="estimator__footnote">
+              <span>NEXT</span>
+              <a className="text-link text-link--forest" href="#quote">
+                Put this lane in front of a broker <Arrow diagonal />
+              </a>
+            </p>
+          </div>
+        </section>
+
+        <section className="tracker" id="tracking" ref={trackerRef}>
+          <div className="section-wrap">
+            <div className="tracker__head">
+              <div className="section-index section-index--light" data-reveal>
+                <span>04</span>
+                <p>Load in motion</p>
+              </div>
+              <h2 data-reveal>Watch a load<br />move, <em>mile by mile.</em></h2>
+              <div className="tracker__intro" data-reveal>
+                <p>
+                  Run a sample Dallas to Chicago load end to end. The route, the timestamps, the
+                  checkpoint notes—this is the picture your London Trucking coordinator works from
+                  when you call for an update.
+                </p>
+                <p className="tracker__disclaimer">
+                  <span>Demonstration</span> LDN-77413 is a scripted sample load. No live carrier
+                  data is shown, stored, or transmitted.
+                </p>
+              </div>
+            </div>
+
+            <div className="tracker__console" data-reveal>
+              <div className="tracker__stage">
+                <div className="tracker__stage-top">
+                  <span>LOAD LDN-77413 / DEMO PLAYBACK</span>
+                  <span className="live-label"><i /> SIMULATED FEED</span>
+                </div>
+
+                <div className="tracker__map" ref={trackMapRef}>
+                  <div className="tracker__plot">
+                    <svg className="tracker__map-svg" viewBox="0 0 1000 560" aria-hidden="true">
+                      <defs>
+                        <pattern id="tracker-grid" width="50" height="50" patternUnits="userSpaceOnUse">
+                          <path d="M50 0H0V50" fill="none" stroke="currentColor" strokeWidth="1" />
+                        </pattern>
+                      </defs>
+                      <rect className="tracker__grid" width="1000" height="560" fill="url(#tracker-grid)" />
+
+                      <path className="tracker__corridor" d={trackerRoutePath} />
+                      <path className="tracker__corridor-dash" d={trackerRoutePath} />
+                      <path className="tracker__traveled" d={trackTraveled} />
+
+                      <g className="tracker__compass" transform="translate(52 66)">
+                        <path d="M0-28 9 9 0 1-9 9Z" />
+                        <text y="30">N</text>
+                      </g>
+
+                      <g className="tracker__scale" transform="translate(744 512)">
+                        <path d="M0 0h190M0-7v14M95-4v8M190-7v14" />
+                        <text y="-14">0</text>
+                        <text x="190" y="-14">250 MI</text>
+                      </g>
+
+                      <g
+                        className="tracker__truck"
+                        transform={`translate(${trackRead.point[0].toFixed(2)} ${trackRead.point[1].toFixed(2)}) rotate(${trackRead.heading.toFixed(2)})`}
+                      >
+                        <circle className="tracker__truck-halo" r="27" />
+                        <rect className="tracker__truck-body" x="-24" y="-9" width="34" height="18" rx="1.5" />
+                        <path className="tracker__truck-cab" d="M12-9h8l6 7v11h-14Z" />
+                        <path className="tracker__truck-ink" d="M-18-3h22" />
+                        <circle className="tracker__truck-wheel" cx="-16" cy="10" r="3.2" />
+                        <circle className="tracker__truck-wheel" cx="2" cy="10" r="3.2" />
+                        <circle className="tracker__truck-wheel" cx="18" cy="10" r="3.2" />
+                      </g>
+                    </svg>
+
+                    <div
+                      className="tracker__nodes"
+                      role="toolbar"
+                      aria-label="Route milestones"
+                      aria-orientation="horizontal"
+                    >
+                      {trackerMilestones.map((milestone, index) => {
+                        const edge =
+                          index === 0
+                            ? " tracker__node--start"
+                            : index === trackerMilestones.length - 1
+                              ? " tracker__node--end"
+                              : "";
+                        const state =
+                          index < trackRead.index
+                            ? " is-passed"
+                            : index === trackRead.index
+                              ? " is-current"
+                              : "";
+
+                        return (
+                          <button
+                            className={`tracker__node${edge}${state}`}
+                            type="button"
+                            key={milestone.code}
+                            ref={(node) => {
+                              trackNodeRefs.current[index] = node;
+                            }}
+                            style={{
+                              left: `${(milestone.point[0] / TRACK_VIEW.w) * 100}%`,
+                              top: `${(milestone.point[1] / TRACK_VIEW.h) * 100}%`,
+                            }}
+                            tabIndex={index === trackFocusIndex ? 0 : -1}
+                            aria-pressed={index === trackRead.index}
+                            onClick={() => glideToMilestone(index)}
+                            onKeyDown={(event) => handleTrackNodeKeys(event, index)}
+                          >
+                            <span className="tracker__node-ring" aria-hidden="true" />
+                            <span className="tracker__node-dot" aria-hidden="true" />
+                            <span className="tracker__node-code" aria-hidden="true">{milestone.code}</span>
+                            <span className="tracker__node-name" aria-hidden="true">{milestone.status}</span>
+                            <span className="sr-only">
+                              {`Stage ${milestone.code} of 07, ${milestone.status}, ${milestone.place}, ${formatTrackClock(milestone.hour)}`}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <p className="tracker__coord" aria-hidden="true">{formatTrackCoord(trackRead.coord)}</p>
+                  </div>
+                </div>
+
+                <div className="tracker__stage-foot">
+                  <span>ORIGIN / DALLAS, TX</span>
+                  <span>925 MI CORRIDOR</span>
+                  <span>DEST / CHICAGO, IL</span>
+                </div>
+
+                <div className="tracker__transport">
+                  <div className="tracker__keys">
+                    <button
+                      className="tracker__key"
+                      type="button"
+                      onClick={handleTrackPrev}
+                      aria-disabled={trackRead.position <= 0}
+                      aria-label="Previous milestone"
+                    >
+                      <svg className="tracker__key-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M18 4v16l-11-8ZM6 4h2.4v16H6Z" />
+                      </svg>
+                    </button>
+
+                    <button className="tracker__key tracker__key--play" type="button" onClick={toggleTrackPlay}>
+                      <svg className="tracker__key-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        {trackPlaying ? (
+                          <path d="M6.5 4h4v16h-4ZM13.5 4h4v16h-4Z" />
+                        ) : (
+                          <path d="M7 4 19 12 7 20Z" />
+                        )}
+                      </svg>
+                      <span>{trackPlayLabel}</span>
+                    </button>
+
+                    <button
+                      className="tracker__key"
+                      type="button"
+                      onClick={handleTrackNext}
+                      aria-disabled={trackAtEnd}
+                      aria-label="Next milestone"
+                    >
+                      <svg className="tracker__key-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M6 4v16l11-8ZM15.6 4H18v16h-2.4Z" />
+                      </svg>
+                    </button>
+
+                    <button
+                      className="tracker__key"
+                      type="button"
+                      onClick={handleTrackRestart}
+                      aria-label="Restart demo playback"
+                    >
+                      <svg className="tracker__key-icon tracker__key-icon--stroke" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M20 12a8 8 0 1 1-2.4-5.7M20 3.5V9h-5.5" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div className="tracker__scrub">
+                    <label className="sr-only" htmlFor="tracker-scrub">
+                      Scrub the demo shipment along its route
+                    </label>
+                    <input
+                      className="tracker__scrub-input"
+                      id="tracker-scrub"
+                      type="range"
+                      min="0"
+                      max={TRACK_MAX}
+                      step="5"
+                      value={Math.round(trackRead.position)}
+                      onChange={handleTrackScrub}
+                      style={{ "--scrub": `${trackRead.progress * 100}%` }}
+                      aria-valuetext={trackScrubText}
+                    />
+                    <div className="tracker__scrub-ticks" aria-hidden="true">
+                      {trackerMilestones.map((milestone, index) => (
+                        <span
+                          className={`tracker__tick${index <= trackRead.index ? " is-done" : ""}`}
+                          key={milestone.code}
+                          style={{ left: `${(index / trackerLegs.length) * 100}%` }}
+                        >
+                          {milestone.code}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="tracker__speed" role="group" aria-label="Playback speed">
+                    {TRACK_SPEEDS.map((speed) => (
+                      <button
+                        className={`tracker__speed-button${trackSpeed === speed ? " is-active" : ""}`}
+                        type="button"
+                        key={speed}
+                        aria-pressed={trackSpeed === speed}
+                        onClick={() => setTrackSpeed(speed)}
+                      >
+                        <span aria-hidden="true">×{speed}</span>
+                        <span className="sr-only">{`${speed} times playback speed`}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="tracker__readout">
+                <div className="tracker__readout-top">
+                  <span>Status board</span>
+                  <span className={`tracker__state${trackAtEnd ? " is-complete" : ""}`}>{trackStateLabel}</span>
+                </div>
+
+                <div className="tracker__phase" aria-live="polite" ref={trackPhaseRef}>
+                  <span className="tracker__phase-code">Stage {trackRead.current.code} / 07</span>
+                  <h3 className="tracker__phase-title">{trackRead.current.status}</h3>
+                  <p className="tracker__phase-place">{trackRead.current.place}</p>
+                  <p className="tracker__phase-note">{trackRead.current.detail}</p>
+                  <p className="sr-only">
+                    {`Logged ${formatTrackClock(trackRead.current.hour)}, ${formatTrackMiles(trackRead.current.mile)} miles run.`}
+                  </p>
+                </div>
+
+                <dl className="tracker__meters">
+                  <div className="tracker__meter">
+                    <dt className="tracker__meter-label">Route clock</dt>
+                    <dd className="tracker__meter-value">{formatTrackClock(trackRead.hours)}</dd>
+                  </div>
+                  <div className="tracker__meter">
+                    <dt className="tracker__meter-label">Elapsed</dt>
+                    <dd className="tracker__meter-value">{formatTrackElapsed(trackRead.hours)}</dd>
+                  </div>
+                  <div className="tracker__meter">
+                    <dt className="tracker__meter-label">Miles run</dt>
+                    <dd className="tracker__meter-value">{formatTrackMiles(trackRead.miles)}</dd>
+                  </div>
+                  <div className="tracker__meter">
+                    <dt className="tracker__meter-label">Miles left</dt>
+                    <dd className="tracker__meter-value">{formatTrackMiles(trackRead.milesLeft)}</dd>
+                  </div>
+                </dl>
+
+                <p className="tracker__next">
+                  <span className="tracker__next-label">{trackRead.next ? "Next stage" : "Load closed"}</span>
+                  <span className="tracker__next-value">
+                    {trackRead.next
+                      ? `${trackRead.next.status} — ETA ${formatTrackClock(trackRead.next.hour)}`
+                      : `Signed ${formatTrackClock(trackRead.current.hour)}`}
+                  </span>
+                </p>
+
+                <div className="tracker__progress">
+                  <div className="tracker__progress-bar" aria-hidden="true">
+                    <span
+                      className="tracker__progress-fill"
+                      style={{ transform: `scaleX(${trackRead.progress})` }}
+                    />
+                  </div>
+                  <span className="tracker__progress-figure" aria-hidden="true">
+                    {Math.round(trackRead.progress * 100)}%
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <p className="availability-note tracker__foot">
+              <span>NOTE</span> Scripted demonstration only. Real shipment updates come from the
+              carrier and your London Trucking coordinator at the intervals agreed for the lane.
+            </p>
+          </div>
+        </section>
+
         <section className="process" id="process">
           <div className="process-backdrop" data-parallax="-10">MOVE</div>
           <div className="section-wrap">
             <div className="process-heading">
               <div className="section-index" data-reveal>
-                <span>03</span>
+                <span>05</span>
                 <p>How it moves</p>
               </div>
               <h2 data-reveal>Details in.<br /><em>Freight out.</em></h2>
@@ -904,7 +2355,7 @@ function App() {
             <h2 className="sr-only">Why London Trucking</h2>
             <div className="why-head">
               <div className="section-index" data-reveal>
-                <span>04</span>
+                <span>06</span>
                 <p>Built for clarity</p>
               </div>
               <p data-reveal>THE LONDON TRUCKING APPROACH</p>
@@ -953,7 +2404,7 @@ function App() {
           <div className="section-wrap quote-grid">
             <div className="quote-copy">
               <div className="section-index section-index--dark" data-reveal>
-                <span>05</span>
+                <span>07</span>
                 <p>Ready when your freight is</p>
               </div>
               <h2 data-reveal>Let’s get your<br />next load <em>moving.</em></h2>
